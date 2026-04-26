@@ -34,6 +34,24 @@ pip install -r requirements.txt
 2. Cherche "Accessibilité Potentielle Localisée APL"
 3. Télécharge le CSV → renomme **`apl.csv`** → place dans `data/`
 
+### Population communale OFGL / INSEE (automatique)
+Le projet interroge automatiquement l'API OFGL :
+
+https://data.ofgl.fr/explore/dataset/populations-ofgl-communes/api/
+
+Source : traitement OFGL à partir de données INSEE, Licence Ouverte Etalab 2.0.
+
+Variables ajoutées :
+- population municipale 2012, 2022 et 2024
+- variation de population 2012-2022 et 2022-2024
+- typologies commune rurale, touristique et montagne
+
+Un cache local est créé au premier lancement :
+
+```
+data/population_ofgl_cache.csv
+```
+
 ---
 
 ## Lancer
