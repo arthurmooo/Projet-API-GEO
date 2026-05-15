@@ -22,7 +22,8 @@ from sklearn.ensemble import (
     VotingRegressor,
 )
 
-DATA_DIR = Path(__file__).parent / "data"
+
+DATA_DIR = Path("/Users/julietterey/Downloads/Projet-API-GEO-Juliette/data")
 
 
 #features ml
@@ -483,7 +484,7 @@ def entrainer_modele(df: pd.DataFrame) -> dict:
         return {}
  
     #COmparaison de tout les modeles 
-    print("\n[ML] === Comparaison de tous les modèles ===")
+    print("\n[ML] Comparaison de tous les modèles ")
     df_comparaison = comparer_tous_modeles(df)
  
     if df_comparaison.empty:
@@ -495,8 +496,8 @@ def entrainer_modele(df: pd.DataFrame) -> dict:
     best_model  = meilleur["_model"]
     best_feats  = meilleur["_features"]
  
-    print(f"\n[ML] === Meilleur modèle : {nom_modele} "
-          f"(R²={meilleur['R2']:.3f}) ===")
+    print(f"\n[ML] Meilleur modèle : {nom_modele} "
+          f"(R²={meilleur['R2']:.3f}) ")
  
     #re calcul des predictions 
     X_all, y_all, _ = _preparer_X_y(df)
@@ -534,4 +535,73 @@ def entrainer_modele(df: pd.DataFrame) -> dict:
         "y_pred":      y_pred,
         "comparaison": df_comparaison_propre,
     }
+
+# =============================================================================
+# EXECUTION PRINCIPALE
+# =============================================================================
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    # Chargement et construction du dataset
+    print("\nCHARGEMENT DES DONNÉES:")
+    df = construire_dataset()
+
+    if df.empty:
+        print("Aucune donnée disponible.")
+    else:
+        print(f"\nDataset final : {len(df)} communes")
+        print(df[["prix_m2_median", "apl_score", "densite", "nb_ventes"]].describe().round(2))
+
+        # Matrice de corrélation
+        print("\nMATRICE DE CORRÉLATION:")
+        cols_corr = [c for c in FEATURES + [TARGET] if c in df.columns]
+        corr = df[cols_corr].corr().round(2)
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(corr, annot=True, fmt=".2f", linewidths=0.5)
+        plt.title("Matrice de corrélation — features ML")
+        plt.tight_layout()
+        plt.show()
+
+        # Entraînement de tous les modèles + sélection du meilleur
+        print("\nENTRAÎNEMENT DES MODÈLES:")
+        res = entrainer_modele(df)
+
+        if res:
+            # Tableau comparatif
+            print("\nCOMPARAISON DES MODÈLES:")
+            print(res["comparaison"].to_string(index=False))
+
+            # Résumé du meilleur modèle
+            print(f"  MEILLEUR MODÈLE : {res['nom_modele']}")
+            print(f"  R2   : {res['r2']}")
+            print(f"  MAE  : {res['mae']:.0f} €/m²")
+            print(f"  RMSE : {res['rmse']:.0f} €/m²")
+            print(f"  Communes utilisées : {res['n']}")
+
+            # Importance des variables
+            print("\nIMPORTANCE DES VARIABLES :")
+            print(res["importance"].to_string(index=False))
+
+            plt.figure(figsize=(7, 4))
+            plt.barh(res["importance"]["variable"], res["importance"]["importance"],
+                     color="#4e8df5")
+            plt.xlabel("Importance")
+            plt.title(f"Importance des variables — {res['nom_modele']}")
+            plt.gca().invert_yaxis()
+            plt.tight_layout()
+            plt.show()
+
+            # 7. Graphique Réel vs Prédit
+            plt.figure(figsize=(6, 6))
+            plt.scatter(res["y_test"], res["y_pred"], alpha=0.5, color="#4e8df5")
+            mn = min(res["y_test"].min(), res["y_pred"].min())
+            mx = max(res["y_test"].max(), res["y_pred"].max())
+            plt.plot([mn, mx], [mn, mx], "r--", label="Prédiction parfaite")
+            plt.xlabel("Prix réel (€/m2)")
+            plt.ylabel("Prix prédit (€/m2)")
+            plt.title(f"Réel vs Prédit — {res['nom_modele']}")
+            plt.legend()
+            plt.tight_layout()
+            plt.show()
  
