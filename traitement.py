@@ -1,21 +1,28 @@
-# =============================================================================
-# traitement.py — Chargement et préparation des données
-# =============================================================================
-
-import numpy as np
 import pandas as pd
-from pathlib import Path
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score, mean_absolute_error
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import warnings
+warnings.filterwarnings("ignore")
+
+from sklearn.preprocessing import LabelEncoder, StandardScaler, MinMaxScaler
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import (accuracy_score, precision_score, recall_score,
+                             f1_score, confusion_matrix, ConfusionMatrixDisplay,
+                             classification_report, roc_curve, auc, silhouette_score)
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import (RandomForestClassifier, AdaBoostClassifier,
+                              GradientBoostingClassifier, VotingClassifier)
+from sklearn.pipeline import Pipeline
+from sklearn.cluster import KMeans
+import joblib
+
 
 DATA_DIR = Path(__file__).parent / "data"
 
-
-# =============================================================================
-# Chargement des données
-# =============================================================================
-
+#implementation des données 
 def charger_dvf() -> pd.DataFrame:
     """
     Charge le fichier DVF téléchargé manuellement.
