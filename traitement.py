@@ -1,40 +1,53 @@
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
+from pathlib import Path
+import time
 import warnings
 warnings.filterwarnings("ignore")
 
-from sklearn.preprocessing import LabelEncoder, StandardScaler, MinMaxScaler
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import (accuracy_score, precision_score, recall_score,
-                             f1_score, confusion_matrix, ConfusionMatrixDisplay,
-                             classification_report, roc_curve, auc, silhouette_score)
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import (RandomForestClassifier, AdaBoostClassifier,
-                              GradientBoostingClassifier, VotingClassifier)
-from sklearn.pipeline import Pipeline
-from sklearn.cluster import KMeans
-import joblib
+import numpy as np
+import pandas as pd
+import requests
 
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import (
+    RandomForestRegressor,
+    AdaBoostRegressor,
+    GradientBoostingRegressor,
+    VotingRegressor,
+)
 
 DATA_DIR = Path(__file__).parent / "data"
 
+
+#features ml
+FEATURES = ["apl_score", "densite", "surface_mediane", "nb_ventes"]
+TARGET   = "prix_m2_median"
+ 
+FEATURE_LABELS = {
+    "apl_score":       "Score APL (accès médecins)",
+    "densite":         "Densité population",
+    "surface_mediane": "Surface médiane",
+    "nb_ventes":       "Nombre de ventes",
+}
+ 
+ 
 #implementation des données 
+
+#file DVF : valeur fonciere 
 def charger_dvf() -> pd.DataFrame:
-    """
-    Charge le fichier DVF téléchargé manuellement.
-    Accepte les formats data.gouv.fr (colonnes françaises).
-    """
     chemin = DATA_DIR / "dvf.csv"
     if not chemin.exists():
         return pd.DataFrame()
 
     df = pd.read_csv(chemin, sep=",", low_memory=False, dtype=str)
 
-    # Renommage flexible selon la version du fichier
+    #Renommage flexible selon la version du fichier
     renommage = {}
     for col in df.columns:
         c = col.lower().strip()
@@ -57,10 +70,10 @@ def charger_dvf() -> pd.DataFrame:
 
     df = df.rename(columns=renommage)
 
-    # Supprimer les colonnes dupliquées issues du renommage (garder la première)
+    #Supp collonnes doubles  
     df = df.loc[:, ~df.columns.duplicated()]
 
-    # Conversions numériques
+    #conversions numériques
     for col in ["prix", "surface", "latitude", "longitude"]:
         if col in df.columns:
             df[col] = df[col].str.replace(",", ".").pipe(pd.to_numeric, errors="coerce")
@@ -74,27 +87,23 @@ def charger_dvf() -> pd.DataFrame:
 
     print(f"DVF chargé : {len(df)} lignes brutes")
 
-    # Garder seulement maisons et appartements
+    #garder seulement maisons et appartements
     if "type_bien" in df.columns:
         df = df[df["type_bien"].isin(["Maison", "Appartement"])]
 
-    # Calcul prix au m²
+    #calcul prix au m2
     mask = (df["surface"] > 0) & df["prix"].notna() & (df["surface"] < 1000)
     df.loc[mask, "prix_m2"] = df.loc[mask, "prix"] / df.loc[mask, "surface"]
 
-    # Filtrage outliers
+    #filtrage outliers 
     df = df[(df["prix_m2"] > 200) & (df["prix_m2"] < 20000)]
 
     df = df.reset_index(drop=True)
     print(f"DVF après filtres : {len(df)} lignes — {df['code_insee'].nunique()} communes uniques")
     return df
 
-
+#File APL : accessibilité potentielle localsiée 
 def charger_apl() -> pd.DataFrame:
-    """
-    Charge le fichier APL (Accessibilité Potentielle Localisée).
-    Accepte apl.xlsx ou apl.csv dans le dossier data/.
-    """
     # Chercher xlsx ou csv
     chemin_xlsx = DATA_DIR / "apl.xlsx"
     chemin_csv  = DATA_DIR / "apl.csv"
@@ -168,13 +177,11 @@ def charger_apl() -> pd.DataFrame:
     return df[["code_insee", "apl_score"]].dropna()
 
 
-def charger_geo() -> pd.DataFrame:
-    """
-    Récupère nom commune + densité via l'API Géo (légère, rapide).
-    Fallback sur CSV local si pas de connexion.
-    """
-    import requests, time
 
+#API
+
+#implementation API GEO : lat/lon → code INSEE + métadonnées communes
+def charger_geo() -> pd.DataFrame:
     chemin_cache = DATA_DIR / "geo_cache.csv"
     if chemin_cache.exists():
         return pd.read_csv(chemin_cache, dtype={"code_insee": str})
@@ -212,15 +219,10 @@ def charger_geo() -> pd.DataFrame:
         print(f"API Géo indisponible : {e}")
         return pd.DataFrame()
 
+#DATASET FINAL (fusion files)
 
-# =============================================================================
-# Construction du dataset final
-# =============================================================================
-
+# DVF  + APL + API GEO
 def construire_dataset() -> pd.DataFrame:
-    """
-    Fusionne DVF + APL + GEO en un seul dataset agrégé par commune.
-    """
     df_dvf = charger_dvf()
     df_apl = charger_apl()
     df_geo = charger_geo()
@@ -228,7 +230,7 @@ def construire_dataset() -> pd.DataFrame:
     if df_dvf.empty:
         return pd.DataFrame()
 
-    # --- Agrégation DVF par commune ---
+    #agrégation dvf x commune 
     agg_dict = dict(
         prix_m2_median  = ("prix_m2", "median"),
         prix_m2_moyen   = ("prix_m2", "mean"),
@@ -247,7 +249,7 @@ def construire_dataset() -> pd.DataFrame:
     )
     df["prix_m2_median"] = df["prix_m2_median"].round(0)
 
-    # Pourcentage maisons
+    #pourcentage de maisons
     if "type_bien" in df_dvf.columns:
         pct = (
             df_dvf.groupby("code_insee")["type_bien"]
@@ -257,18 +259,18 @@ def construire_dataset() -> pd.DataFrame:
         )
         df = df.merge(pct, on="code_insee", how="left")
 
-    # --- Jointure APL ---
+    #jointure APL
     if not df_apl.empty:
         df = df.merge(df_apl, on="code_insee", how="left")
         df["desert_medical"] = (df["apl_score"] < 2.5).astype(int)
 
-    # --- Jointure GEO ---
+    #jointure API GEO 
     if not df_geo.empty:
         geo_cols = ["code_insee", "commune", "population", "densite", "departement"]
         geo_cols = [c for c in geo_cols if c in df_geo.columns]
         df = df.merge(df_geo[geo_cols], on="code_insee", how="left")
 
-    # --- Classification zone ---
+    #classificiation des zones 
     if "densite" in df.columns:
         df["type_zone"] = pd.cut(
             df["densite"],
@@ -278,63 +280,258 @@ def construire_dataset() -> pd.DataFrame:
     elif "commune" not in df.columns:
         df["commune"] = df["code_insee"]
 
-    # Filtrer communes avec trop peu de ventes
+    #filtrage commune ss ventes
+    #trop petits
     df = df[df["nb_ventes"] >= 1]
 
     return df.reset_index(drop=True)
 
 
-# =============================================================================
-# Modèle ML
-# =============================================================================
 
-def entrainer_modele(df: pd.DataFrame) -> dict:
-    """
-    Entraîne un Random Forest pour prédire le prix au m².
-    Retourne le modèle, les métriques et l'importance des variables.
-    """
-    features_possibles = ["apl_score", "densite", "surface_mediane", "nb_ventes"]
-    features = [f for f in features_possibles if f in df.columns]
+#MODELES MACHINE LEARNING 
 
-    df_ml = df[features + ["prix_m2_median"]].dropna()
-
+#selection features dispo
+def _preparer_X_y(df: pd.DataFrame):
+    features_dispo = [f for f in FEATURES if f in df.columns]
+    df_ml = df[features_dispo + [TARGET]].dropna()
     if len(df_ml) < 30:
-        return {}
+        return None, None, []
+    X = df_ml[features_dispo]
+    y = df_ml[TARGET]
+    return X, y, features_dispo
+ 
+#metrqiues : R2, MAE, RSME
+def _metriques(y_test, y_pred) -> dict:
+    return {
+        "r2":   round(float(r2_score(y_test, y_pred)), 3),
+        "mae":  round(float(mean_absolute_error(y_test, y_pred)), 0),
+        "rmse": round(float(np.sqrt(mean_squared_error(y_test, y_pred))), 0),
+    }
+ 
 
-    X = df_ml[features]
-    y = df_ml["prix_m2_median"]
+#importance de svariables selon estimator
+def _extraire_importance(estimateur, features: list) -> pd.DataFrame:
+    labels = [FEATURE_LABELS.get(f, f) for f in features]
+ 
+    if hasattr(estimateur, "feature_importances_"):
+        imp = estimateur.feature_importances_
+ 
+    elif hasattr(estimateur, "coef_"):
+        coef = np.abs(estimateur.coef_)
+        imp  = coef / coef.sum() if coef.sum() > 0 else np.ones(len(features)) / len(features)
+ 
+    elif hasattr(estimateur, "estimators_"):
+        imps = [sub.feature_importances_
+                for sub in estimateur.estimators_
+                if hasattr(sub, "feature_importances_")]
+        imp = np.mean(imps, axis=0) if imps else np.ones(len(features)) / len(features)
+ 
+    else:
+        imp = np.ones(len(features)) / len(features)
+ 
+    return pd.DataFrame({
+        "variable":   labels,
+        "importance": imp,
+    }).sort_values("importance", ascending=False).reset_index(drop=True)
+ 
+ 
+# Catalogue complet : modèle de base + grille d'hyperparamètres
 
+_CATALOGUE_HP = {
+ 
+    #LINEAR REGRESSION
+    "Régression linéaire": {
+        "model": Pipeline([("scaler", StandardScaler()), ("m", LinearRegression())]),
+        "params": {},  # pas d'hyperparamètre à tuner
+    },
+ 
+    #RIDGE
+    "Ridge (L2)": {
+        "model":  Pipeline([("scaler", StandardScaler()), ("m", Ridge())]),
+        "params": {"m__alpha": [0.1, 1.0, 10.0, 100.0]},
+    },
+ 
+    #LASSO
+    "LASSO (L1)": {
+        "model":  Pipeline([("scaler", StandardScaler()), ("m", Lasso(max_iter=5000))]),
+        "params": {"m__alpha": [0.1, 1.0, 10.0, 100.0]},
+    },
+ 
+    #KNN
+    "K-Nearest Neighbors": {
+        "model":  Pipeline([("scaler", StandardScaler()), ("m", KNeighborsRegressor())]),
+        "params": {"m__n_neighbors": [3, 5, 7, 10],
+                   "m__weights":     ["uniform", "distance"]},
+    },
+ 
+    #DECISION TREE
+    "Decision Tree": {
+        "model":  DecisionTreeRegressor(random_state=42),
+        "params": {"max_depth":   [4, 6, 8, None],
+                   "min_samples_split": [2, 5, 10]},
+    },
+ 
+    #RANDOM FOREST
+    "Random Forest": {
+        "model":  RandomForestRegressor(random_state=42, n_jobs=-1),
+        "params": {"n_estimators": [100, 200],
+                   "max_depth":    [6, 8, None],
+                   "min_samples_split": [2, 5]},
+    },
+ 
+    #ADABOOST
+    "AdaBoost": {
+        "model":  AdaBoostRegressor(random_state=42),
+        "params": {"n_estimators":  [50, 100, 200],
+                   "learning_rate": [0.01, 0.1, 1.0]},
+    },
+ 
+    #GRADIENT BOOSTING
+    "Gradient Boosting": {
+        "model":  GradientBoostingRegressor(random_state=42),
+        "params": {"n_estimators":  [100, 200],
+                   "max_depth":     [3, 4, 5],
+                   "learning_rate": [0.05, 0.1, 0.2]},
+    },
+ 
+    #VOTING REGRESSOR
+    "Voting Regressor": {
+        "model": VotingRegressor(estimators=[
+            ("rf", RandomForestRegressor(n_estimators=100, max_depth=6,
+                                         random_state=42, n_jobs=-1)),
+            ("gb", GradientBoostingRegressor(n_estimators=100, max_depth=3,
+                                              learning_rate=0.1, random_state=42)),
+            ("dt", DecisionTreeRegressor(max_depth=6, random_state=42)),
+        ]),
+        "params": {},  # pas de tuning sur l'ensemble lui-même
+    },
+}
+ 
+#entriane les 8 models (gridsearchcv = hyperparametres)
+def comparer_tous_modeles(df: pd.DataFrame, cv: int = 5) -> pd.DataFrame:
+    X, y, features = _preparer_X_y(df)
+    if X is None:
+        print("[ML] Données insuffisantes pour entraîner les modèles (< 30 communes)")
+        return pd.DataFrame()
+ 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
+ 
+    resultats = []
+ 
+    for nom, cfg in _CATALOGUE_HP.items():
+        print(f"[ML] Entraînement : {nom}...", end=" ")
+        try:
+            if cfg["params"]:
+                # GridSearchCV sur les hyperparamètres définis
+                gs = GridSearchCV(
+                    cfg["model"],
+                    cfg["params"],
+                    scoring="r2",
+                    cv=cv,
+                    n_jobs=-1,
+                    refit=True,
+                )
+                gs.fit(X_train, y_train)
+                best_model  = gs.best_estimator_
+                best_params = gs.best_params_
+            else:
+                #Pas d'hyperparamètre → entraînement direct
+                best_model  = cfg["model"]
+                best_model.fit(X_train, y_train)
+                best_params = {}
+ 
+            y_pred = best_model.predict(X_test)
+            m = _metriques(y_test, y_pred)
+ 
+            print(f"R²={m['r2']:.3f}  MAE={m['mae']:.0f}€")
+            resultats.append({
+                "Modèle":           nom,
+                "R2":               m["r2"],
+                "MAE (€/m2)":       m["mae"],
+                "RMSE (€/m2)":      m["rmse"],
+                "Meilleurs params": str(best_params) if best_params else "—",
+                "_model":           best_model,   # objet modèle (usage interne)
+                "_features":        features,
+            })
+ 
+        except Exception as e:
+            print(f"ERREUR : {e}")
+            resultats.append({
+                "Modèle":           nom,
+                "R2":               None,
+                "MAE (€/m2)":       None,
+                "RMSE (€/m2)":      None,
+                "Meilleurs params": "Erreur",
+                "_model":           None,
+                "_features":        features,
+            })
+ 
+    df_res = pd.DataFrame(resultats)
+    df_res = df_res.dropna(subset=["R2"]).sort_values("R2", ascending=False).reset_index(drop=True)
+    return df_res
 
-    model = RandomForestRegressor(n_estimators=200, max_depth=8, random_state=42, n_jobs=-1)
-    model.fit(X_train, y_train)
 
-    y_pred = model.predict(X_test)
-    r2  = r2_score(y_test, y_pred)
-    mae = mean_absolute_error(y_test, y_pred)
+#SELECTION DU MEILLEUR MODELE 
 
-    labels = {
-        "apl_score":       "Score APL (accès médecins)",
-        "densite":         "Densité population",
-        "surface_mediane": "Surface médiane",
-        "nb_ventes":       "Nombre de ventes",
-    }
+#entriane tout les modeles et selection du best (metriques)
 
-    df_imp = pd.DataFrame({
-        "variable":   [labels.get(f, f) for f in features],
-        "importance": model.feature_importances_,
-    }).sort_values("importance", ascending=False)
-
+def entrainer_modele(df: pd.DataFrame) -> dict:
+    X, y, features = _preparer_X_y(df)
+    if X is None:
+        return {}
+ 
+    #COmparaison de tout les modeles 
+    print("\n[ML] === Comparaison de tous les modèles ===")
+    df_comparaison = comparer_tous_modeles(df)
+ 
+    if df_comparaison.empty:
+        return {}
+ 
+    #BEST MODEL
+    meilleur = df_comparaison.iloc[0]
+    nom_modele  = meilleur["Modèle"]
+    best_model  = meilleur["_model"]
+    best_feats  = meilleur["_features"]
+ 
+    print(f"\n[ML] === Meilleur modèle : {nom_modele} "
+          f"(R²={meilleur['R2']:.3f}) ===")
+ 
+    #re calcul des predictions 
+    X_all, y_all, _ = _preparer_X_y(df)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_all, y_all, test_size=0.2, random_state=42
+    )
+    y_pred = best_model.predict(X_test)
+ 
+    #Importance des variables 
+    #Récupere l'estimateur final (Pipeline)
+    if hasattr(best_model, "named_steps"):
+        estimateur = best_model.named_steps.get(
+            "m", list(best_model.named_steps.values())[-1]
+        )
+    else:
+        estimateur = best_model
+ 
+    importance = _extraire_importance(estimateur, best_feats)
+ 
+    #tableau comparatiuf 
+    colonnes_affichage = ["Modèle", "R2", "MAE (€/m2)", "RMSE (€/m2)", "Meilleurs params"]
+    df_comparaison_propre = df_comparaison[colonnes_affichage].copy()
+ 
     return {
-        "model":      model,
-        "features":   features,
-        "r2":         round(r2, 3),
-        "mae":        round(mae, 0),
-        "n":          len(df_ml),
-        "importance": df_imp,
-        "X_test":     X_test,
-        "y_test":     y_test,
-        "y_pred":     y_pred,
+        "model":       best_model,
+        "nom_modele":  nom_modele,
+        "features":    best_feats,
+        "importance":  importance,
+        "r2":          meilleur["R2"],
+        "mae":         meilleur["MAE (€/m2)"],
+        "rmse":        meilleur["RMSE (€/m2)"],
+        "n":           len(X_all),
+        "X_test":      X_test,
+        "y_test":      y_test,
+        "y_pred":      y_pred,
+        "comparaison": df_comparaison_propre,
     }
+ 
