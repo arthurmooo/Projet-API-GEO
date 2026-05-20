@@ -24,6 +24,11 @@ MODEL_FEATURES = [
     "variation_population_2012_2022_pct",
     "surface_mediane",
     "nb_ventes",
+    "pct_maisons",
+    "is_zrr",
+    "revenu_median",
+    "age_median",
+    "taux_chomage",
 ]
 
 FEATURE_LABELS = {
@@ -34,6 +39,11 @@ FEATURE_LABELS = {
     "variation_population_2012_2022_pct": "Variation population 2012-2022",
     "surface_mediane": "Surface médiane",
     "nb_ventes": "Nombre de ventes",
+    "pct_maisons": "% de maisons",
+    "is_zrr": "Zone de revitalisation rurale",
+    "revenu_median": "Revenu médian (€/an)",
+    "age_median": "Âge médian",
+    "taux_chomage": "Taux de chômage (%)",
 }
 
 
@@ -244,6 +254,226 @@ def charger_geo() -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def charger_zrr() -> pd.DataFrame:
+    import requests
+    from io import BytesIO, StringIO
+
+    chemin_cache = DATA_DIR / "zrr_cache.csv"
+    if chemin_cache.exists():
+        return pd.read_csv(chemin_cache, dtype={"code_insee": str})
+
+    try:
+        meta = requests.get(
+            "https://www.data.gouv.fr/api/1/datasets/zones-de-revitalisation-rurale-zrr/",
+            timeout=30,
+        ).json()
+
+        ressource = next(
+            (
+                r for r in meta.get("resources", [])
+                if r.get("format", "").lower() in {"csv", "xls", "xlsx"}
+            ),
+            None,
+        )
+        if not ressource:
+            return pd.DataFrame()
+
+        fmt = ressource["format"].lower()
+        url = ressource.get("latest") or ressource["url"]
+        raw = requests.get(url, timeout=90)
+        raw.raise_for_status()
+
+        if fmt == "csv":
+            df_raw = pd.read_csv(StringIO(raw.text), dtype=str, sep=None, engine="python")
+            col_code = next(
+                (
+                    c for c in df_raw.columns
+                    if c.upper() in {"CODGEO", "CODE_COMMUNE", "CODE_INSEE", "COG", "CODE INSEE"}
+                ),
+                df_raw.columns[0],
+            )
+            col_zrr = next(
+                (
+                    c for c in df_raw.columns
+                    if "ZRR" in c.upper() or "ZONAGE" in c.upper() or "CLASSEMENT" in c.upper()
+                ),
+                None,
+            )
+            df = df_raw
+        else:
+            engine = "xlrd" if fmt == "xls" else "openpyxl"
+            df_raw = pd.read_excel(
+                BytesIO(raw.content), sheet_name=0, header=4, dtype=str, engine=engine
+            )
+            df = df_raw.iloc[1:].reset_index(drop=True)
+            col_code = df.columns[0]
+            col_zrr = df.columns[2]
+
+        df = df.rename(columns={col_code: "code_insee"})
+        df["code_insee"] = _normaliser_code_insee(df["code_insee"].str.strip())
+
+        if col_zrr:
+            df["is_zrr"] = ~df[col_zrr].str.upper().str.startswith("NC")
+        else:
+            df["is_zrr"] = True
+
+        df = df[["code_insee", "is_zrr"]].drop_duplicates("code_insee").reset_index(drop=True)
+        df.to_csv(chemin_cache, index=False)
+        return df
+
+    except Exception as e:
+        print(f"Erreur ZRR : {e}")
+        return pd.DataFrame()
+
+
+def charger_insee(codes: list | None = None) -> pd.DataFrame:
+    """Récupère revenu_median, age_median et taux_chomage via l'API Melodi."""
+    import requests
+    import time
+
+    chemin_cache = DATA_DIR / "insee_cache.csv"
+
+    if chemin_cache.exists():
+        df_cache = pd.read_csv(chemin_cache, dtype={"code_insee": str})
+        codes_manquants = (
+            [c for c in (codes or []) if c not in df_cache["code_insee"].values]
+            if codes is not None else []
+        )
+        if not codes_manquants:
+            return df_cache
+    else:
+        df_cache = pd.DataFrame()
+        codes_manquants = codes or []
+
+    if not codes_manquants:
+        return df_cache
+
+    base_url = "https://api.insee.fr/melodi/data"
+    delai = 60.0 / 30
+    age_bounds = {
+        "Y_LT15": (0, 15),
+        "Y15T24": (15, 25),
+        "Y25T39": (25, 40),
+        "Y40T54": (40, 55),
+        "Y55T64": (55, 65),
+        "Y65T79": (65, 80),
+        "Y_GE80": (80, 100),
+    }
+
+    def _obs_value(r: requests.Response) -> float:
+        try:
+            obs = r.json().get("observations", [])
+            return obs[0]["measures"]["OBS_VALUE_NIVEAU"]["value"] if obs else np.nan
+        except Exception:
+            return np.nan
+
+    def _get(url: str, params: dict) -> requests.Response:
+        for _ in range(3):
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code != 429:
+                return r
+            time.sleep(65)
+        return r
+
+    def _age_median(pops: dict) -> float:
+        groupes = sorted(
+            (inf, sup, pops[k])
+            for k, (inf, sup) in age_bounds.items()
+            if k in pops and pops[k] is not None
+        )
+        total = sum(g[2] for g in groupes)
+        if total == 0:
+            return np.nan
+        target, cumul = total / 2, 0
+        for inf, sup, pop in groupes:
+            if cumul + pop >= target:
+                return round(inf + (target - cumul) / pop * (sup - inf), 1)
+            cumul += pop
+        return np.nan
+
+    records = []
+    for code in codes_manquants:
+        geo = f"COM-{code}"
+        row = {"code_insee": code}
+
+        try:
+            r = _get(
+                f"{base_url}/DS_FILOSOFI_CC",
+                {
+                    "GEO": geo,
+                    "FILOSOFI_MEASURE": "MED_SL",
+                    "UNIT_MEASURE": "EUR_YR",
+                    "maxResult": 1,
+                },
+            )
+            row["revenu_median"] = _obs_value(r)
+        except Exception:
+            row["revenu_median"] = np.nan
+        time.sleep(delai)
+
+        try:
+            employes = chomeurs = None
+            for sta, key in (("1", "employes"), ("2", "chomeurs")):
+                r = _get(
+                    f"{base_url}/DS_RP_EMPLOI_LR_PRINC",
+                    {
+                        "GEO": geo,
+                        "EMPSTA_ENQ": sta,
+                        "SEX": "_T",
+                        "AGE": "Y15T64",
+                        "EDUC": "_T",
+                        "TIME_PERIOD": "2022",
+                        "maxResult": 1,
+                    },
+                )
+                val = _obs_value(r)
+                if key == "employes":
+                    employes = val
+                else:
+                    chomeurs = val
+                time.sleep(delai)
+            if employes and chomeurs and not np.isnan(employes) and not np.isnan(chomeurs):
+                row["taux_chomage"] = round(chomeurs / (employes + chomeurs) * 100, 1)
+            else:
+                row["taux_chomage"] = np.nan
+        except Exception:
+            row["taux_chomage"] = np.nan
+
+        try:
+            r = _get(
+                f"{base_url}/DS_RP_POPULATION_PRINC",
+                {
+                    "GEO": geo,
+                    "SEX": "_T",
+                    "RP_MEASURE": "POP",
+                    "TIME_PERIOD": "2022",
+                    "maxResult": 50,
+                },
+            )
+            pops = {}
+            for obs in r.json().get("observations", []):
+                age = obs["dimensions"].get("AGE")
+                val = obs["measures"].get("OBS_VALUE_NIVEAU", {}).get("value")
+                if age in age_bounds:
+                    pops[age] = val
+            row["age_median"] = _age_median(pops)
+        except Exception:
+            row["age_median"] = np.nan
+        time.sleep(delai)
+
+        records.append(row)
+
+    if records:
+        df_new = pd.DataFrame(records)
+        df_cache = (
+            pd.concat([df_cache, df_new], ignore_index=True)
+            if not df_cache.empty else df_new
+        )
+        df_cache.to_csv(chemin_cache, index=False)
+
+    return df_cache
+
+
 def charger_population_ofgl() -> pd.DataFrame:
     """
     Récupère les populations communales 2012-2024 via l'API OFGL.
@@ -400,6 +630,20 @@ def construire_dataset() -> pd.DataFrame:
 
         if "population_2024" in df.columns:
             df["population"] = df["population_2024"].combine_first(df.get("population"))
+
+    # --- Jointure ZRR ---
+    df_zrr = charger_zrr()
+    if not df_zrr.empty:
+        df = df.merge(df_zrr, on="code_insee", how="left")
+        df["is_zrr"] = df["is_zrr"].fillna(False).astype(int)
+
+    # --- Jointure INSEE ---
+    df_insee = charger_insee(codes=df["code_insee"].tolist())
+    if not df_insee.empty:
+        cols_insee = _colonnes_presentes(
+            df_insee, ["code_insee", "revenu_median", "age_median", "taux_chomage"]
+        )
+        df = df.merge(df_insee[cols_insee], on="code_insee", how="left")
 
     # --- Classification zone ---
     if "densite" in df.columns:
