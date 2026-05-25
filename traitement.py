@@ -17,6 +17,7 @@ import requests
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.inspection import permutation_importance
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 
 from sklearn.linear_model import (
@@ -706,21 +707,48 @@ def _metriques(y_test, y_pred) -> dict:
     }
 
 
-def _extraire_importance(estimateur, features) -> pd.DataFrame:
+def _normaliser_importance(importance: np.ndarray, features: list[str]) -> np.ndarray:
+    importance = np.nan_to_num(np.asarray(importance, dtype=float), nan=0.0)
+    importance = np.clip(importance, 0, None)
+    total = importance.sum()
+    if total <= 0:
+        return np.ones(len(features)) / len(features)
+    return importance / total
+
+
+def _extraire_importance(estimateur, features, X_test=None, y_test=None) -> pd.DataFrame:
     labels = [FEATURE_LABELS.get(feature, feature) for feature in features]
     if hasattr(estimateur, "feature_importances_"):
-        imp = estimateur.feature_importances_
+        imp = _normaliser_importance(estimateur.feature_importances_, features)
     elif hasattr(estimateur, "coef_"):
         coef = np.abs(estimateur.coef_)
-        imp = coef / coef.sum() if coef.sum() > 0 else np.ones(len(features)) / len(features)
+        imp = _normaliser_importance(coef, features)
     elif hasattr(estimateur, "estimators_"):
         imps = [
             estimator.feature_importances_
             for estimator in estimateur.estimators_
             if hasattr(estimator, "feature_importances_")
         ]
-        imp = np.mean(imps, axis=0) if imps else np.ones(len(features)) / len(features)
+        imp = _normaliser_importance(np.mean(imps, axis=0), features) if imps else None
     else:
+        imp = None
+
+    if imp is None and X_test is not None and y_test is not None:
+        try:
+            result = permutation_importance(
+                estimateur,
+                X_test,
+                y_test,
+                n_repeats=10,
+                random_state=42,
+                scoring="r2",
+                n_jobs=1,
+            )
+            imp = _normaliser_importance(result.importances_mean, features)
+        except Exception as exc:
+            print(f"[ML] Importance par permutation indisponible : {exc}")
+
+    if imp is None:
         imp = np.ones(len(features)) / len(features)
 
     return (
@@ -1011,20 +1039,15 @@ def entrainer_modele(df: pd.DataFrame, cv: int = 10) -> dict:
 
     print(f"\n[ML] Meilleur : {nom_modele} (R²={meilleur['R2']:.3f})")
     print(f"[ML] K-Fold {cv} sur le meilleur modèle...")
-    cv_r2 = cross_val_score(best_model, X, y, cv=cv, scoring="r2", n_jobs=-1)
-    cv_mae = cross_val_score(best_model, X, y, cv=cv, scoring="neg_mean_absolute_error", n_jobs=-1)
+    cv_r2 = cross_val_score(best_model, X, y, cv=cv, scoring="r2", n_jobs=1)
+    cv_mae = cross_val_score(best_model, X, y, cv=cv, scoring="neg_mean_absolute_error", n_jobs=1)
     print(f"[ML] K-Fold R² : {cv_r2.mean():.3f} ± {cv_r2.std():.3f}")
     print(f"[ML] K-Fold MAE : {(-cv_mae).mean():.0f} ± {(-cv_mae).std():.0f} €/m²")
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.15, random_state=42)
     y_pred = best_model.predict(X_test)
 
-    estimateur = (
-        best_model.named_steps.get("m", list(best_model.named_steps.values())[-1])
-        if hasattr(best_model, "named_steps")
-        else best_model
-    )
-    importance = _extraire_importance(estimateur, best_feats)
+    importance = _extraire_importance(best_model, best_feats, X_test, y_test)
     colonnes = ["Modèle", "R2", "MAE (€/m2)", "RMSE (€/m2)", "Meilleurs params"]
 
     return {
@@ -1073,8 +1096,7 @@ def entrainer_modele_stacking_api(df: pd.DataFrame, cv: int = 5) -> dict:
     cv_r2 = cross_val_score(model, X, y, cv=cv, scoring="r2", n_jobs=1)
     cv_mae = cross_val_score(model, X, y, cv=cv, scoring="neg_mean_absolute_error", n_jobs=1)
 
-    estimateur = model.estimators_[0] if getattr(model, "estimators_", None) else model
-    importance = _extraire_importance(estimateur, features)
+    importance = _extraire_importance(model, features, X_test, y_test)
     comparaison = pd.DataFrame(
         [
             {
