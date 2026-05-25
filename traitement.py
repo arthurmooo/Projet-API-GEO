@@ -58,7 +58,7 @@ VILLES_REF = {
     "Marseille": (43.2965, 5.3698),
 }
 
-FEATURES = [
+CORE_FEATURES = [
     "apl_score",
     "densite",
     "population_2024",
@@ -68,11 +68,18 @@ FEATURES = [
     "nb_ventes",
     "pct_maisons",
     "is_zrr",
+    "dist_ville_min",
+]
+
+OPTIONAL_INSEE_FEATURES = [
     "revenu_median",
     "age_median",
     "taux_chomage",
-    "dist_ville_min",
 ]
+
+FEATURES = CORE_FEATURES + (
+    OPTIONAL_INSEE_FEATURES if os.getenv("TERRITOIRE_IMMO_USE_INSEE_FEATURES", "0") == "1" else []
+)
 
 TARGET = "prix_m2_median"
 
