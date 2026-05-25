@@ -34,8 +34,11 @@ from sklearn.ensemble import (
 )
 
 
-DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = Path("/Users/julietterey/Downloads/Projet-API-GEO-Juliette/data")
 
+#distance en km entre chaque commune et la grande ville la plus proche
+#coordonées gps
+#utiles pour l'instant Lyon Geneve et Grenoble 
 VILLES_REF = {
     "Lyon":     (45.7640,  4.8357),
     "Grenoble": (45.1885,  5.7245),
@@ -51,7 +54,9 @@ FEATURES = [
     "dist_ville_min",
 ]
 
+
 TARGET = "prix_m2_median"
+
 
 FEATURE_LABELS = {
     "apl_score":       "Score APL (accès médecins)",
@@ -110,7 +115,7 @@ def charger_dvf() -> pd.DataFrame:
 
     if "code_commune" in df.columns:
         df["code_commune"] = df["code_commune"].astype(str).str.zfill(5)
-
+    
     df["prix"]    = pd.to_numeric(df["prix"],    errors="coerce")
     df["surface"] = pd.to_numeric(df["surface"], errors="coerce")
     for col in ["latitude", "longitude"]:
@@ -496,7 +501,8 @@ def construire_dataset() -> pd.DataFrame:
 
     df = df[df["nb_ventes"] >= 3].reset_index(drop=True)
     print(f"[Dataset] {len(df):,} communes — prix médian {df['prix_m2_median'].median():.0f} €/m²")
-
+    
+    # Sauvegarde du dataset final pour le professeur
     df.to_csv(DATA_DIR / "dataset_final.csv", index=False)
     print(f"[Export] dataset_final.csv sauvegardé — {len(df)} communes, {len(df.columns)} colonnes")
     return df
@@ -536,6 +542,7 @@ def _extraire_importance(estimateur, features) -> pd.DataFrame:
 
 
 _CATALOGUE_HP = {
+
     "Régression linéaire": {
         "model":  Pipeline([("scaler", StandardScaler()), ("m", LinearRegression())]),
         "params": {},
@@ -672,7 +679,7 @@ _CATALOGUE_HP = {
     },
 }
 
-
+#plus de folds : 5-> 10
 def comparer_tous_modeles(df: pd.DataFrame, cv: int = 10) -> pd.DataFrame:
     X, y, features = _preparer_X_y(df)
     if X is None:
@@ -724,13 +731,13 @@ def comparer_tous_modeles(df: pd.DataFrame, cv: int = 10) -> pd.DataFrame:
             .reset_index(drop=True))
 
 
-def entrainer_modele(df: pd.DataFrame, cv: int = 10) -> dict:
+def entrainer_modele(df: pd.DataFrame) -> dict:
     X, y, features = _preparer_X_y(df)
     if X is None:
         return {}
 
     print("\n[ML] Comparaison des modèles...")
-    df_comparaison = comparer_tous_modeles(df, cv=cv)
+    df_comparaison = comparer_tous_modeles(df)
 
     if df_comparaison.empty:
         return {}
@@ -742,6 +749,7 @@ def entrainer_modele(df: pd.DataFrame, cv: int = 10) -> dict:
 
     print(f"\n[ML] Meilleur : {nom_modele} (R²={meilleur['R2']:.3f})")
 
+    # K-Fold sur le meilleur modèle — évaluation plus robuste qu'un seul split
     print(f"[ML] K-Fold {cv} sur le meilleur modèle...")
     cv_r2  = cross_val_score(best_model, X, y, cv=cv, scoring="r2", n_jobs=-1)
     cv_mae = cross_val_score(best_model, X, y, cv=cv,
@@ -751,8 +759,7 @@ def entrainer_modele(df: pd.DataFrame, cv: int = 10) -> dict:
 
     X_all, y_all, _ = _preparer_X_y(df)
     X_train, X_test, y_train, y_test = train_test_split(
-        X_all, y_all, test_size=0.15, random_state=42
-    )
+    X_all, y_all, test_size=0.15, random_state=42)
     y_pred = best_model.predict(X_test)
 
     estimateur = (best_model.named_steps.get("m", list(best_model.named_steps.values())[-1])
@@ -818,6 +825,7 @@ if __name__ == "__main__":
             print(f"  MAE  (K-Fold {res['cv_folds']}) : {res['cv_mae_mean']:.0f} ± {res['cv_mae_std']:.0f} €/m²")
             print(f"  Communes : {res['n']}")
 
+
             print("\nIMPORTANCE DES VARIABLES:")
             print(res["importance"].to_string(index=False))
 
@@ -851,3 +859,4 @@ if __name__ == "__main__":
             plt.legend()
             plt.tight_layout()
             plt.show()
+            
