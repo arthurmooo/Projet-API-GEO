@@ -315,9 +315,10 @@ def onglet_carte(df):
 
 def onglet_ml(df):
     st.markdown("""
-    Le modèle **Random Forest** prédit le prix au m² à partir des caractéristiques
-    de chaque commune. L'importance des variables sert à comparer leur poids dans
-    le modèle ; ce n'est pas une preuve de causalité.
+    Le moteur ML compare plusieurs familles de modèles et retient automatiquement
+    le meilleur score de test. La validation K-Fold sert à contrôler la stabilité
+    du résultat ; l'importance des variables reste une lecture indicative, pas une
+    preuve de causalité.
     """)
 
     if st.button("🚀 Entraîner le modèle", type="primary"):
@@ -332,10 +333,16 @@ def onglet_ml(df):
         return
 
     # Métriques
-    c1, c2, c3 = st.columns(3)
-    c1.metric("R²", f"{res['r2']:.3f}", help="1.0 = prédiction parfaite")
-    c2.metric("MAE", f"{res['mae']:,.0f} €/m²", help="Erreur absolue moyenne")
-    c3.metric("Communes utilisées", f"{res['n']:,}")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Modèle retenu", str(res.get("nom_modele", "n/a")))
+    c2.metric("R²", f"{res['r2']:.3f}", help="1.0 = prédiction parfaite")
+    c3.metric("MAE", f"{res['mae']:,.0f} €/m²", help="Erreur absolue moyenne")
+    c4.metric("K-Fold R²", f"{res.get('cv_r2_mean', 0):.3f} ± {res.get('cv_r2_std', 0):.3f}")
+    c5.metric("Communes utilisées", f"{res['n']:,}")
+
+    if "comparaison" in res and not res["comparaison"].empty:
+        with st.expander("Comparaison des modèles testés", expanded=False):
+            st.dataframe(res["comparaison"], use_container_width=True, hide_index=True)
 
     col1, col2 = st.columns(2)
 

@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
+.venv/
 data/geo_cache.csv
+data/*_cache.csv
+data/dataset_final.csv
 .env
 .claude/

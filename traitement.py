@@ -4,6 +4,7 @@
 from pathlib import Path
 from math import radians, cos, sin, asin, sqrt
 import glob
+import os
 import time
 import warnings
 
@@ -233,6 +234,7 @@ def charger_apl() -> pd.DataFrame:
             elif any(x in c for x in ["an", "annee", "millesime", "année"]):
                 renommage[col] = "annee_apl"
         df = df.rename(columns=renommage)
+        df = df.loc[:, ~df.columns.duplicated()]
 
         if "code_insee" not in df.columns:
             df = df.rename(columns={df.columns[0]: "code_insee"})
@@ -391,6 +393,14 @@ def charger_insee(codes: list | None = None) -> pd.DataFrame:
         codes_manquants = codes or []
 
     if not codes_manquants:
+        return df_cache
+
+    if os.getenv("TERRITOIRE_IMMO_FETCH_INSEE", "0") != "1":
+        print(
+            f"[INSEE] Cache partiel : {len(df_cache):,} communes — "
+            f"{len(codes_manquants):,} manquantes non téléchargées "
+            "(définir TERRITOIRE_IMMO_FETCH_INSEE=1 pour compléter)."
+        )
         return df_cache
 
     print(f"[INSEE] Appel API pour {len(codes_manquants)} communes...")
@@ -664,11 +674,17 @@ def construire_dataset() -> pd.DataFrame:
     df = df[df["nb_ventes"] >= 3].reset_index(drop=True)
     if not df.empty:
         print(f"[Dataset] {len(df):,} communes — prix médian {df['prix_m2_median'].median():.0f} €/m²")
+        df.to_csv(DATA_DIR / "dataset_final.csv", index=False)
+        print(f"[Export] dataset_final.csv sauvegardé — {len(df)} communes, {len(df.columns)} colonnes")
     return df
 
 
 def _preparer_X_y(df: pd.DataFrame):
-    features_dispo = [feature for feature in FEATURES if feature in df.columns]
+    features_dispo = [
+        feature
+        for feature in FEATURES
+        if feature in df.columns and df[feature].notna().sum() >= 30
+    ]
     df_ml = df[features_dispo + [TARGET]].dropna()
     if len(df_ml) < 30:
         return None, None, []
@@ -744,9 +760,10 @@ _CATALOGUE_HP = {
     "K-Nearest Neighbors": {
         "model": Pipeline([("scaler", StandardScaler()), ("m", KNeighborsRegressor())]),
         "params": {
-            "m__n_neighbors": [3, 5, 7, 10, 15],
-            "m__weights": ["uniform", "distance"],
-            "m__p": [1, 2],
+            "m__n_neighbors": [8, 10, 12, 15, 20],
+            "m__weights": ["distance"],
+            "m__p": [1],
+            "m__metric": ["minkowski", "euclidean"],
         },
     },
     "SVR": {
@@ -777,27 +794,29 @@ _CATALOGUE_HP = {
     "Random Forest": {
         "model": RandomForestRegressor(random_state=42, n_jobs=-1),
         "params": {
-            "n_estimators": [100, 200, 300],
-            "max_depth": [8, 12, 20, None],
-            "min_samples_split": [2, 5, 10],
-            "max_features": ["sqrt", "log2", None],
+            "n_estimators": [200, 300, 500],
+            "max_depth": [15, 20, 25, 30],
+            "max_features": ["log2", 0.3, 0.5],
+            "min_samples_split": [2, 3, 5],
+            "min_samples_leaf": [1, 2],
         },
     },
     "Extra Trees": {
         "model": ExtraTreesRegressor(random_state=42, n_jobs=-1),
         "params": {
-            "n_estimators": [100, 200, 300],
-            "max_depth": [8, 12, 20, None],
-            "min_samples_split": [2, 5, 10],
-            "max_features": ["sqrt", "log2", None],
+            "n_estimators": [200, 300, 500],
+            "max_depth": [20, 30, None],
+            "max_features": [None, "sqrt", 0.5],
+            "min_samples_split": [5, 10, 20],
+            "min_samples_leaf": [1, 2],
         },
     },
     "Bagging": {
         "model": BaggingRegressor(random_state=42, n_jobs=-1),
         "params": {
-            "n_estimators": [50, 100, 200],
-            "max_samples": [0.7, 0.8, 1.0],
-            "max_features": [0.7, 0.8, 1.0],
+            "n_estimators": [200, 300, 500],
+            "max_samples": [0.6, 0.7, 0.75, 0.8],
+            "max_features": [0.7, 0.8, 0.9],
         },
     },
     "AdaBoost": {
@@ -810,10 +829,11 @@ _CATALOGUE_HP = {
     "Gradient Boosting": {
         "model": GradientBoostingRegressor(random_state=42),
         "params": {
-            "n_estimators": [100, 200, 300],
-            "max_depth": [3, 4, 5, 6],
-            "learning_rate": [0.01, 0.05, 0.1, 0.2],
-            "subsample": [0.7, 0.8, 1.0],
+            "n_estimators": [300, 500, 700],
+            "max_depth": [3, 4],
+            "learning_rate": [0.005, 0.01, 0.02],
+            "subsample": [0.7, 0.8, 0.85],
+            "min_samples_leaf": [1, 2, 4],
         },
     },
     "HistGradientBoosting": {
@@ -842,9 +862,35 @@ _CATALOGUE_HP = {
     "Voting Regressor": {
         "model": VotingRegressor(
             estimators=[
-                ("rf", RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)),
-                ("hgb", HistGradientBoostingRegressor(max_iter=100, max_depth=4, learning_rate=0.1, random_state=42)),
-                ("en", Pipeline([("scaler", StandardScaler()), ("m", ElasticNet(alpha=0.1, l1_ratio=0.5))])),
+                (
+                    "rf",
+                    RandomForestRegressor(
+                        n_estimators=300,
+                        max_depth=20,
+                        max_features="log2",
+                        random_state=42,
+                        n_jobs=-1,
+                    ),
+                ),
+                (
+                    "et",
+                    ExtraTreesRegressor(
+                        n_estimators=300,
+                        max_depth=None,
+                        max_features=None,
+                        random_state=42,
+                        n_jobs=-1,
+                    ),
+                ),
+                (
+                    "knn",
+                    Pipeline(
+                        [
+                            ("scaler", StandardScaler()),
+                            ("m", KNeighborsRegressor(n_neighbors=10, weights="distance", p=1)),
+                        ]
+                    ),
+                ),
             ]
         ),
         "params": {},
@@ -852,13 +898,30 @@ _CATALOGUE_HP = {
     "Stacking": {
         "model": StackingRegressor(
             estimators=[
-                ("rf", RandomForestRegressor(n_estimators=100, max_depth=8, random_state=42, n_jobs=-1)),
-                ("hgb", HistGradientBoostingRegressor(max_iter=100, max_depth=4, learning_rate=0.1, random_state=42)),
-                ("knn", Pipeline([("scaler", StandardScaler()), ("m", KNeighborsRegressor(n_neighbors=7))])),
-                ("en", Pipeline([("scaler", StandardScaler()), ("m", ElasticNet(alpha=0.1, l1_ratio=0.5))])),
+                (
+                    "rf",
+                    RandomForestRegressor(
+                        n_estimators=300,
+                        max_depth=20,
+                        max_features="log2",
+                        random_state=42,
+                        n_jobs=-1,
+                    ),
+                ),
+                ("et", ExtraTreesRegressor(n_estimators=300, max_depth=None, random_state=42, n_jobs=-1)),
+                (
+                    "knn",
+                    Pipeline(
+                        [
+                            ("scaler", StandardScaler()),
+                            ("m", KNeighborsRegressor(n_neighbors=10, weights="distance", p=1)),
+                        ]
+                    ),
+                ),
+                ("ada", AdaBoostRegressor(n_estimators=200, learning_rate=0.1, random_state=42)),
             ],
-            final_estimator=Ridge(alpha=1.0),
-            cv=5,
+            final_estimator=Ridge(alpha=0.1),
+            cv=10,
             n_jobs=-1,
         ),
         "params": {},
@@ -866,13 +929,13 @@ _CATALOGUE_HP = {
 }
 
 
-def comparer_tous_modeles(df: pd.DataFrame, cv: int = 5) -> pd.DataFrame:
+def comparer_tous_modeles(df: pd.DataFrame, cv: int = 10) -> pd.DataFrame:
     X, y, features = _preparer_X_y(df)
     if X is None:
         print("[ML] Données insuffisantes")
         return pd.DataFrame()
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.15, random_state=42)
 
     resultats = []
     for nom, cfg in _CATALOGUE_HP.items():
@@ -924,7 +987,7 @@ def comparer_tous_modeles(df: pd.DataFrame, cv: int = 5) -> pd.DataFrame:
     )
 
 
-def entrainer_modele(df: pd.DataFrame, cv: int = 5) -> dict:
+def entrainer_modele(df: pd.DataFrame, cv: int = 10) -> dict:
     X, y, features = _preparer_X_y(df)
     if X is None:
         return {}
@@ -946,7 +1009,7 @@ def entrainer_modele(df: pd.DataFrame, cv: int = 5) -> dict:
     print(f"[ML] K-Fold R² : {cv_r2.mean():.3f} ± {cv_r2.std():.3f}")
     print(f"[ML] K-Fold MAE : {(-cv_mae).mean():.0f} ± {(-cv_mae).std():.0f} €/m²")
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.15, random_state=42)
     y_pred = best_model.predict(X_test)
 
     estimateur = (
@@ -970,6 +1033,66 @@ def entrainer_modele(df: pd.DataFrame, cv: int = 5) -> dict:
         "y_test": y_test,
         "y_pred": y_pred,
         "comparaison": df_comparaison[colonnes].copy(),
+        "cv_r2_mean": round(float(cv_r2.mean()), 3),
+        "cv_r2_std": round(float(cv_r2.std()), 3),
+        "cv_mae_mean": round(float((-cv_mae).mean()), 0),
+        "cv_mae_std": round(float((-cv_mae).std()), 0),
+        "cv_folds": cv,
+    }
+
+
+def entrainer_modele_stacking_api(df: pd.DataFrame, cv: int = 5) -> dict:
+    X, y, features = _preparer_X_y(df)
+    if X is None:
+        return {}
+
+    model = StackingRegressor(
+        estimators=[
+            ("rf", RandomForestRegressor(n_estimators=100, max_depth=8, random_state=42, n_jobs=1)),
+            ("hgb", HistGradientBoostingRegressor(max_iter=100, max_depth=4, learning_rate=0.1, random_state=42)),
+            ("knn", Pipeline([("scaler", StandardScaler()), ("m", KNeighborsRegressor(n_neighbors=7))])),
+            ("en", Pipeline([("scaler", StandardScaler()), ("m", ElasticNet(alpha=0.1, l1_ratio=0.5))])),
+        ],
+        final_estimator=Ridge(alpha=1.0),
+        cv=5,
+        n_jobs=1,
+    )
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    metriques = _metriques(y_test, y_pred)
+
+    cv_r2 = cross_val_score(model, X, y, cv=cv, scoring="r2", n_jobs=1)
+    cv_mae = cross_val_score(model, X, y, cv=cv, scoring="neg_mean_absolute_error", n_jobs=1)
+
+    estimateur = model.estimators_[0] if getattr(model, "estimators_", None) else model
+    importance = _extraire_importance(estimateur, features)
+    comparaison = pd.DataFrame(
+        [
+            {
+                "Modèle": "Stacking",
+                "R2": metriques["r2"],
+                "MAE (€/m2)": metriques["mae"],
+                "RMSE (€/m2)": metriques["rmse"],
+                "Meilleurs params": "Profil API fixe",
+            }
+        ]
+    )
+
+    return {
+        "model": model,
+        "nom_modele": "Stacking",
+        "features": features,
+        "importance": importance,
+        "r2": metriques["r2"],
+        "mae": metriques["mae"],
+        "rmse": metriques["rmse"],
+        "n": len(X),
+        "X_test": X_test,
+        "y_test": y_test,
+        "y_pred": y_pred,
+        "comparaison": comparaison,
         "cv_r2_mean": round(float(cv_r2.mean()), 3),
         "cv_r2_std": round(float(cv_r2.std()), 3),
         "cv_mae_mean": round(float((-cv_mae).mean()), 0),
