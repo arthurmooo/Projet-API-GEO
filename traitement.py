@@ -34,7 +34,7 @@ from sklearn.ensemble import (
 )
 
 
-DATA_DIR = Path("/Users/julietterey/Downloads/Projet-API-GEO-Juliette/data")
+DATA_DIR = Path(__file__).parent / "data"
 
 #distance en km entre chaque commune et la grande ville la plus proche
 #coordonées gps
@@ -731,13 +731,13 @@ def comparer_tous_modeles(df: pd.DataFrame, cv: int = 10) -> pd.DataFrame:
             .reset_index(drop=True))
 
 
-def entrainer_modele(df: pd.DataFrame) -> dict:
+def entrainer_modele(df: pd.DataFrame, cv: int = 10) -> dict:
     X, y, features = _preparer_X_y(df)
     if X is None:
         return {}
 
     print("\n[ML] Comparaison des modèles...")
-    df_comparaison = comparer_tous_modeles(df)
+    df_comparaison = comparer_tous_modeles(df, cv=cv)
 
     if df_comparaison.empty:
         return {}
