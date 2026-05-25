@@ -33,9 +33,6 @@ from sklearn.ensemble import (
     StackingRegressor, BaggingRegressor,
 )
 
-
-DATA_DIR = Path(__file__).parent / "data"
-
 VILLES_REF = {
     "Lyon":     (45.7640,  4.8357),
     "Grenoble": (45.1885,  5.7245),
@@ -733,7 +730,6 @@ def entrainer_modele(df: pd.DataFrame, cv: int = 5) -> dict:
 
     print(f"\n[ML] Meilleur : {nom_modele} (R²={meilleur['R2']:.3f})")
 
-    # K-Fold 5 : évaluation croisée du meilleur modèle sur toutes les données
     print(f"[ML] K-Fold {cv} sur le meilleur modèle...")
     cv_r2  = cross_val_score(best_model, X, y, cv=cv, scoring="r2", n_jobs=-1)
     cv_mae = cross_val_score(best_model, X, y, cv=cv,
@@ -765,7 +761,6 @@ def entrainer_modele(df: pd.DataFrame, cv: int = 5) -> dict:
         "y_test":       y_test,
         "y_pred":       y_pred,
         "comparaison":  df_comparaison[colonnes].copy(),
-        # Résultats K-Fold 5
         "cv_r2_mean":   round(float(cv_r2.mean()), 3),
         "cv_r2_std":    round(float(cv_r2.std()), 3),
         "cv_mae_mean":  round(float((-cv_mae).mean()), 0),
